@@ -1,16 +1,16 @@
 package main
 
-import "fmt"
-import "log"
-import "encoding/json"
-import "net/http"
-import "io/ioutil"
-import "os"
-import "lib/types"
-import "flag"
-import "net/url"
-import ("strings"
-    "path")
+import ( "fmt"
+	"log"
+	"encoding/json"
+	"net/http"
+	"io/ioutil"
+	"os"
+	"lib/types"
+	"flag"
+	"net/url"
+	"strings"
+	"path")
 
 
 
