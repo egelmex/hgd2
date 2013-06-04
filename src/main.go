@@ -13,12 +13,12 @@ import ("lib/types"
     "encoding/gob"
     "bytes"
     "flag"
+    "lib/xdgbase"
+    "crypto/rand"
+"encoding/hex"
     )
 import "github.com/jmhodges/levigo"
 
-const (
-    DIR = "/home/me92/.hgd"
-)
 
 var db *levigo.DB
 var port string
@@ -30,9 +30,11 @@ func init() {
 		defaultPort = "8080"
 		usagePort = "port to connect to"
 
-		defaultDIR = DIR
 		usageDIR = "dir for HDG configuration files"
 	)
+
+	defaultDIR := xdgbase.GetConfigHome() + "/hgd"
+
 	flag.StringVar(&port, "port", defaultPort, usagePort)
 	flag.StringVar(&port, "p", defaultPort, usagePort+" (shorthand)")
 
@@ -51,10 +53,13 @@ func main() {
 	playlistReq := make(chan types.PlaylistReq)
 	playlistAdd := make(chan types.Submit)
 	playlistNextSong := make(chan nextSong)
+	loginReq := make(chan types.LoginMsg)
+	keyCheck := make(chan types.KeyCheckMsg)
 
-	http.HandleFunc("/login", login)
+
+	http.HandleFunc("/login", mklogin(loginReq))
 	http.HandleFunc("/playlist", mkplaylist(playlistReq))
-	http.HandleFunc("/submit", mksubmit(playlistAdd))
+	http.HandleFunc("/submit", mksubmit(playlistAdd, keyCheck))
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, "HGD server, %q", html.EscapeString(r.URL.Path))
 	})
@@ -62,13 +67,14 @@ func main() {
 	opts := levigo.NewOptions()
 	opts.SetCache(levigo.NewLRUCache(3<<30))
 	opts.SetCreateIfMissing(true)
-	db, err = levigo.Open(DIR + "/db", opts)
+	db, err = levigo.Open(dir + "/db", opts)
 	if err != nil {
 		log.Fatal(err)
 	}
 
 	go playlistManager(db, playlistReq, playlistAdd, playlistNextSong)
 	go play(playlistNextSong)
+	go userManger(loginReq, keyCheck)
 	go log.Fatal(http.ListenAndServe(":" + port, nil))
 
 	time.Sleep(time.Second)
@@ -76,24 +82,56 @@ func main() {
 }
 
 
-func mksubmit(out chan types.Submit) func(http.ResponseWriter, *http.Request) {
+func mksubmit(out chan types.Submit, keyCheck chan types.KeyCheckMsg) func(http.ResponseWriter, *http.Request) {
         return func(w http.ResponseWriter, r *http.Request) {
             if r.Method == "POST" {
                 log.Printf("New submit attempt")
                 r.ParseForm()
                 var jsonLogin = r.FormValue("data")
                 submit := new(types.Submit)
+
+
                 var e = json.Unmarshal([]byte(jsonLogin), submit)
                 if e == nil {
                     log.Printf("Submit Request from: %v", submit.Key)
-                    out <- *submit
-                } else {
-                    log.Printf("SubmitFailed %v \"%v\"\n", e, r.FormValue("data"))
-                }
+
+			permok, userok := checkPerms(keyCheck, submit.Key, 0)
+			if (!userok) {
+				log.Println("Submit failed from unkown user key: \"", submit.Key, "\"")
+				w.WriteHeader(http.StatusForbidden);
+				return
+			}
+			if (!permok) {
+				log.Println("Submit failed userkey \"", submit.Key, "\" has invalide perms")
+				fmt.Fprintf(w,"{\"error\":\"Unknown User\"}")
+				return
+			}
+			    out <- *submit
+			} else {
+			    log.Printf("SubmitFailed %v \"%v\"\n", e, r.FormValue("data"))
+			}
             } else {
                 http.NotFound(w, r)
             }
         }
+}
+
+func checkPerms(keyCheck chan types.KeyCheckMsg,key string, perms int) (bool, bool) {
+	resp := make(chan types.KeyCheckResp)
+
+	keyCheck <- types.KeyCheckMsg{key, resp}
+	r :=<-resp
+
+	if (r.OK) {
+		if (r.Permissions & perms) == perms {
+			return true, true
+		} else {
+			return false, true
+		}
+	} else {
+		return false, false;
+	}
+
 }
 
 func playlistManager(db *levigo.DB, in chan types.PlaylistReq, playlistAdd chan types.Submit, ns chan nextSong) {
@@ -161,7 +199,7 @@ func getPlaylistFromDB(db *levigo.DB) []types.PlayListItem {
 
 func playListAdd(req types.Submit, playlist []types.PlayListItem) []types.PlayListItem {
 
-                fo, err := ioutil.TempFile(DIR, req.Name)
+                fo, err := ioutil.TempFile(dir + "/files", req.Name)
                 if (err != nil) {
                     log.Panic(err)
                     //XXX: handel error
@@ -213,21 +251,27 @@ func mkplaylist(out chan types.PlaylistReq) func(http.ResponseWriter, *http.Requ
 	}
 }
 
-func login(w http.ResponseWriter, r *http.Request) {
-	if r.Method == "POST" {
-		log.Printf("New Login attempt")
-		r.ParseForm()
-		var jsonLogin = r.FormValue("data")
-		login := new(types.Login)
-		var e = json.Unmarshal([]byte(jsonLogin), login)
-		if e == nil {
-			log.Printf("Login Request from: %v", login.Name)
-			fmt.Fprintf(w, "{\"Key\":\"TODO\"}")
+func mklogin(out chan types.LoginMsg) func(http.ResponseWriter, *http.Request) {
+	return func (w http.ResponseWriter, r *http.Request) {
+		if r.Method == "POST" {
+			log.Printf("New Login attempt")
+			r.ParseForm()
+			var jsonLogin = r.FormValue("data")
+			login := new(types.Login)
+			var e = json.Unmarshal([]byte(jsonLogin), login)
+			if e == nil {
+				resp := make (chan types.LoginResp)
+				out <- types.LoginMsg{*login, resp}
+				r := <-resp
+
+				log.Printf("Login Request from: %v", login.Name)
+				fmt.Fprintf(w, "{\"Key\":\"%s\"}", r.Key)
+			} else {
+				log.Printf("LoginFailed %v \"%v\"\n", e, r.FormValue("data"))
+			}
 		} else {
-			log.Printf("LoginFailed %v \"%v\"\n", e, r.FormValue("data"))
+			http.NotFound(w, r)
 		}
-	} else {
-		http.NotFound(w, r)
 	}
 }
 
@@ -237,23 +281,69 @@ type nextSong struct {
 
 
 func play(requestSong chan nextSong) {
-    for {
-        log.Println("Asking for next song")
-        c := make(chan string)
-        requestSong <-nextSong{c}
-        ns := <-c
-        log.Println("nextsong is ", ns)
-        cmd := exec.Command("mplayer", ns)
-        err := cmd.Start()
-        if (err != nil) {
-            log.Println(err)
-            /// XXX
-        }
-	err = cmd.Wait()
-        if (err != nil) {
-            log.Println(err)
-            /// XXX
-        }
-	time.Sleep(time.Second)
-    }
+	for {
+		log.Println("Asking for next song")
+		c := make(chan string)
+		requestSong <-nextSong{c}
+		ns := <-c
+		log.Println("nextsong is ", ns)
+		cmd := exec.Command("mplayer", ns)
+		err := cmd.Start()
+		if (err != nil) {
+		    log.Println(err)
+		    /// XXX
+		}
+		err = cmd.Wait()
+		if (err != nil) {
+		    log.Println(err)
+		    /// XXX
+		}
+		time.Sleep(time.Second)
+	}
+}
+
+func userManger(login chan types.LoginMsg, checkkey chan types.KeyCheckMsg) {
+	users := map [string] types.User{}
+	keys := map [string] types.User{}
+	addUser ("mex", "boobies", users)
+	for {
+		select {
+		case req := <-login:
+			log.Println("Checking login of: ", req.Login.Name)
+
+			user, ok := users[req.Login.Name]
+			if !ok {
+				req.Resp <- types.LoginResp{"Unknown username or password.",""}
+			} else {
+				if user.Password == req.Login.Password {
+					///XXX: needs togenerate key
+					key, _ := generateUUID()
+					keys[key] = user
+					req.Resp <- types.LoginResp{"", key}
+				} else {
+					req.Resp <- types.LoginResp{"Unknown username or password.",""}
+				}
+			}
+		case req := <-checkkey:
+			key, ok := keys[req.Key]
+			req.Resp <- types.KeyCheckResp{key.Permissions, ok}
+		}
+	}
+}
+
+func addUser(username, password string, users map [string] types.User){
+	log.Print("Adding user ", username)
+	users[username] = types.User{username, password, 0}
+}
+
+func generateUUID() (string, bool) {
+	u := make([]byte, 16)
+	_, err := rand.Read(u)
+	if err != nil {
+	    return "", false
+	}
+
+	u[8] = (u[8] | 0x80) & 0xBF // what's the purpose ?
+	u[6] = (u[6] | 0x40) & 0x4F // what's the purpose ?
+	return hex.EncodeToString(u), true
 }

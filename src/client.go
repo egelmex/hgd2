@@ -16,6 +16,8 @@ import ( "fmt"
 
 var server string
 var port string
+var username string
+var password string
 
 var connectionString string
 
@@ -24,20 +26,39 @@ func init() {
 		defaultServer = "localhost"
 		usageServer   = "server to connect to"
 
-        defaultPort = "8080"
-        usagePort = "port to connect to"
+		defaultPort = "8080"
+		usagePort = "port to connect to"
+
+		defaultUser = ""
+		usageUser = "User to authenticate as"
+
+		defaultPassword = ""
+		usagePassword = "password to authenticate with"
 	)
 	flag.StringVar(&server, "server", defaultServer, usageServer)
 	flag.StringVar(&server, "s", defaultServer, usageServer+" (shorthand)")
 
-    flag.StringVar(&port, "port", defaultPort, usagePort)
+	flag.StringVar(&port, "port", defaultPort, usagePort)
 	flag.StringVar(&port, "p", defaultPort, usagePort+" (shorthand)")
+
+	flag.StringVar(&username, "username", defaultUser, usageUser)
+	flag.StringVar(&username, "l", defaultUser, usageUser+" (shorthand)")
+
+	flag.StringVar(&password, "password", defaultPassword, usagePassword)
+	flag.StringVar(&password, "P", defaultPassword, usagePassword+" (shorthand)")
+
 }
 
 func main() {
-    flag.Parse()
-    args := flag.Args()
-    connectionString = "http://" + server + ":" + port + "/"
+	flag.Parse()
+	args := flag.Args()
+	connectionString = "http://" + server + ":" + port + "/"
+
+	key := ""
+	if username != "" {
+		key = login(username, password)
+	}
+
 
     if len(args) == 0 {
         printPlayList()
@@ -47,7 +68,7 @@ func main() {
                 printPlayList()
         case "submit":
                 if len(args) == 2 {
-                    submit(args[1:])
+                    submit(args[1:], key)
                 } else {
                      fmt.Println("Submit <Filename>\n")
 
@@ -61,14 +82,39 @@ func main() {
 
 }
 
-func submit(parms []string) {
+func login(username, password string) string {
+
+        login := types.Login{username, password}
+        res, err := json.Marshal(login)
+        if err != nil {
+            log.Fatal(err)
+        }
+        resp, err := http.PostForm(connectionString + "login", url.Values{"data": {string(res)}})
+        if err != nil {
+            log.Fatal(err)
+        }
+
+
+	r := new (types.LoginResp)
+
+	decoder := json.NewDecoder(resp.Body)
+	e := decoder.Decode(r)
+	if e != nil {
+		log.Fatal(e)
+	}
+
+	return r.Key
+
+}
+
+func submit(parms []string, key string) {
 
         b, err := ioutil.ReadFile(parms[0])
         if err != nil { panic(err) }
 
 
 
-        submit := types.NewSubmit(path.Base(parms[0]), b, "TODO")
+        submit := types.NewSubmit(path.Base(parms[0]), b, key)
         res, err := json.Marshal(submit)
         if err != nil {
             log.Fatal(err)
