@@ -5,9 +5,9 @@ type Login struct {
     Password string
 }
 
-type LoginMsg struct {
-	Login Login
-	Resp chan LoginResp
+type LoginResp struct {
+    Err string
+    Key string
 }
 
 func NewSubmit(n string, d []byte, k string) *Submit {
@@ -20,41 +20,11 @@ type Submit struct {
     Key string
 }
 
-type LoginResp struct {
-    Err string
-    Key string
-}
-
 type PlayListItem struct {
     TrackName string
     Filename string
 }
 
-type PlaylistReq struct {
-    ResultChan chan []string
-}
 
-type PlaylistAdd struct {
-	TrackName string
-	TrackFile string
-}
 
-const (
-	permAdmin = 1 << iota
-)
 
-type User struct {
-	Name string
-	Password string
-	Permissions int
-}
-
-type KeyCheckMsg struct {
-	Key string
-	Resp chan KeyCheckResp
-}
-
-type KeyCheckResp struct {
-	Permissions int
-	OK bool
-}
