@@ -1,29 +1,28 @@
 package main
 
-import "net/http"
-import "fmt"
-import "html"
-import "log"
-import "encoding/json"
-import ("lib/types"
-	"lib/usermanager"
+import (
+	"encoding/json"
+	"flag"
+	"fmt"
+	"html"
 	"lib/playlist"
-    "flag"
-    "lib/xdgbase"
-    "time"
-    )
+	"lib/types"
+	"lib/usermanager"
+	"lib/xdgbase"
+	"log"
+	"net/http"
+	"time"
+)
 import "github.com/jmhodges/levigo"
-
 
 var db *levigo.DB
 var port string
 var dir string
 
-
 func init() {
 	const (
 		defaultPort = "8080"
-		usagePort = "port to connect to"
+		usagePort   = "port to connect to"
 
 		usageDIR = "dir for HDG configuration files"
 	)
@@ -34,9 +33,8 @@ func init() {
 	flag.StringVar(&port, "p", defaultPort, usagePort+" (shorthand)")
 
 	flag.StringVar(&dir, "dir", defaultDIR, usageDIR)
-	flag.StringVar(&dir, "d", defaultDIR, usageDIR +" (shorthand)")
+	flag.StringVar(&dir, "d", defaultDIR, usageDIR+" (shorthand)")
 }
-
 
 func main() {
 
@@ -50,7 +48,6 @@ func main() {
 	loginReq := make(chan usermanager.LoginMsg)
 	keyCheck := make(chan usermanager.KeyCheckMsg)
 
-
 	http.HandleFunc("/login", mklogin(loginReq))
 	http.HandleFunc("/playlist", mkplaylist(playlistReq))
 	http.HandleFunc("/submit", mksubmit(playlistAdd, keyCheck))
@@ -59,74 +56,71 @@ func main() {
 	})
 
 	opts := levigo.NewOptions()
-	opts.SetCache(levigo.NewLRUCache(3<<30))
+	opts.SetCache(levigo.NewLRUCache(3 << 30))
 	opts.SetCreateIfMissing(true)
-	db, err = levigo.Open(dir + "/db", opts)
+	db, err = levigo.Open(dir+"/db", opts)
 	if err != nil {
 		log.Fatal(err)
 	}
 
 	go playlist.PlaylistManager(db, playlistReq, playlistAdd, dir)
 	go usermanager.UserManger(loginReq, keyCheck)
-	go log.Fatal(http.ListenAndServe(":" + port, nil))
+	go log.Fatal(http.ListenAndServe(":"+port, nil))
 
 	time.Sleep(time.Second)
 	log.Println("All done setting up.")
 }
 
-
 func mksubmit(out chan types.Submit, keyCheck chan usermanager.KeyCheckMsg) func(http.ResponseWriter, *http.Request) {
-        return func(w http.ResponseWriter, r *http.Request) {
-            if r.Method == "POST" {
-                log.Printf("New submit attempt")
-                r.ParseForm()
-                var jsonLogin = r.FormValue("data")
-                submit := new(types.Submit)
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "POST" {
+			log.Printf("New submit attempt")
+			r.ParseForm()
+			var jsonLogin = r.FormValue("data")
+			submit := new(types.Submit)
 
+			var e = json.Unmarshal([]byte(jsonLogin), submit)
+			if e == nil {
+				log.Printf("Submit Request from: %v", submit.Key)
 
-                var e = json.Unmarshal([]byte(jsonLogin), submit)
-                if e == nil {
-                    log.Printf("Submit Request from: %v", submit.Key)
-
-			permok, userok := checkPerms(keyCheck, submit.Key, usermanager.PermSubmit)
-			if (!userok) {
-				log.Println("Submit failed from unkown user key: \"", submit.Key, "\"")
-				w.WriteHeader(http.StatusForbidden);
-				return
-			}
-			if (!permok) {
-				log.Println("Submit failed userkey \"", submit.Key, "\" has invalide perms")
-				fmt.Fprintf(w,"{\"error\":\"Unknown User\"}")
-				return
-			}
-			    out <- *submit
+				permok, userok := checkPerms(keyCheck, submit.Key, usermanager.PermSubmit)
+				if !userok {
+					log.Println("Submit failed from unkown user key: \"", submit.Key, "\"")
+					w.WriteHeader(http.StatusForbidden)
+					return
+				}
+				if !permok {
+					log.Println("Submit failed userkey \"", submit.Key, "\" has invalide perms")
+					fmt.Fprintf(w, "{\"error\":\"Unknown User\"}")
+					return
+				}
+				out <- *submit
 			} else {
-			    log.Printf("SubmitFailed %v \"%v\"\n", e, r.FormValue("data"))
+				log.Printf("SubmitFailed %v \"%v\"\n", e, r.FormValue("data"))
 			}
-            } else {
-                http.NotFound(w, r)
-            }
-        }
+		} else {
+			http.NotFound(w, r)
+		}
+	}
 }
 
-func checkPerms(keyCheck chan usermanager.KeyCheckMsg,key string, perms int) (bool, bool) {
+func checkPerms(keyCheck chan usermanager.KeyCheckMsg, key string, perms int) (bool, bool) {
 	resp := make(chan usermanager.KeyCheckResp)
 
 	keyCheck <- usermanager.KeyCheckMsg{key, resp}
-	r :=<-resp
+	r := <-resp
 
-	if (r.OK) {
+	if r.OK {
 		if (r.Permissions & perms) == perms {
 			return true, true
 		} else {
 			return false, true
 		}
 	} else {
-		return false, false;
+		return false, false
 	}
 
 }
-
 
 func mkplaylist(out chan playlist.PlaylistReq) func(http.ResponseWriter, *http.Request) {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -136,7 +130,7 @@ func mkplaylist(out chan playlist.PlaylistReq) func(http.ResponseWriter, *http.R
 		playlist := <-c
 		res, err := json.Marshal(playlist)
 		if err != nil {
-			log.Panic (err)
+			log.Panic(err)
 			//XXX: handel err
 		}
 		log.Printf("send user playist %v\n", string(res))
@@ -145,7 +139,7 @@ func mkplaylist(out chan playlist.PlaylistReq) func(http.ResponseWriter, *http.R
 }
 
 func mklogin(out chan usermanager.LoginMsg) func(http.ResponseWriter, *http.Request) {
-	return func (w http.ResponseWriter, r *http.Request) {
+	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == "POST" {
 			log.Printf("New Login attempt")
 			r.ParseForm()
@@ -153,7 +147,7 @@ func mklogin(out chan usermanager.LoginMsg) func(http.ResponseWriter, *http.Requ
 			login := new(types.Login)
 			var e = json.Unmarshal([]byte(jsonLogin), login)
 			if e == nil {
-				resp := make (chan usermanager.LoginResp)
+				resp := make(chan usermanager.LoginResp)
 				out <- usermanager.LoginMsg{*login, resp}
 				r := <-resp
 
