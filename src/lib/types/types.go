@@ -1,13 +1,13 @@
 package types
 
 type Login struct {
-    Name string
-    Password string
+	Name     string
+	Password string
 }
 
 type LoginResp struct {
-    Err string
-    Key string
+	Err string
+	Key string
 }
 
 func NewSubmit(n string, d []byte, k string) *Submit {
@@ -15,16 +15,12 @@ func NewSubmit(n string, d []byte, k string) *Submit {
 }
 
 type Submit struct {
-    Name string
-    Data []byte
-    Key string
+	Name string
+	Data []byte
+	Key  string
 }
 
 type PlayListItem struct {
-    TrackName string
-    Filename string
+	TrackName string
+	Filename  string
 }
-
-
-
-

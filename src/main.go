@@ -11,13 +11,17 @@ import (
 	"lib/xdgbase"
 	"log"
 	"net/http"
+	"strings"
 	"time"
+
+//	"os"
 )
 import "github.com/jmhodges/levigo"
 
 var db *levigo.DB
 var port string
 var dir string
+var initPassword string
 
 func init() {
 	const (
@@ -25,6 +29,9 @@ func init() {
 		usagePort   = "port to connect to"
 
 		usageDIR = "dir for HDG configuration files"
+
+		usageInit       = "First time initialisation"
+		defaultPassword = ""
 	)
 
 	defaultDIR := xdgbase.GetConfigHome() + "/hgd"
@@ -34,41 +41,79 @@ func init() {
 
 	flag.StringVar(&dir, "dir", defaultDIR, usageDIR)
 	flag.StringVar(&dir, "d", defaultDIR, usageDIR+" (shorthand)")
+
+	flag.StringVar(&initPassword, "init", defaultPassword, usageInit)
 }
 
 func main() {
+	flag.Parse()
+	args := flag.Args()
+	if len(args) > 0 {
+		log.Println("Arguments were given parsing them first.")
+		switch strings.ToLower(args[0]) {
+		default:
+			log.Println("unknown command")
+		}
+		log.Fatal("Quiting argument handled.")
+	}
 
 	log.Println("HGD STARTING")
-	flag.Parse()
 
-	var err error
-
-	playlistReq := make(chan playlist.PlaylistReq)
-	playlistAdd := make(chan types.Submit)
-	loginReq := make(chan usermanager.LoginMsg)
-	keyCheck := make(chan usermanager.KeyCheckMsg)
-
-	http.HandleFunc("/login", mklogin(loginReq))
-	http.HandleFunc("/playlist", mkplaylist(playlistReq))
-	http.HandleFunc("/submit", mksubmit(playlistAdd, keyCheck))
-	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprintf(w, "HGD server, %q", html.EscapeString(r.URL.Path))
-	})
-
-	opts := levigo.NewOptions()
-	opts.SetCache(levigo.NewLRUCache(3 << 30))
-	opts.SetCreateIfMissing(true)
-	db, err = levigo.Open(dir+"/db", opts)
+	// Set up DB
+	db, err := initDB()
 	if err != nil {
 		log.Fatal(err)
 	}
 
+	playlistReq := make(chan playlist.PlaylistReq)
+	playlistAdd := make(chan types.Submit)
+
+	// Set up user manager
+	um := usermanager.NewUserManager(db)
+	err = um.Initialise()
+	log.Print("About to start UM")
+	go um.Run()
+	if err != nil && initPassword == "" {
+		log.Fatal("No users set, if this is the first time you have run hgd use the init flag 'init=<password>'")
+	} else if err != nil {
+		resp := make(chan bool)
+		log.Printf("Adding admin user")
+		um.AddUser <- usermanager.AddUserMsg{usermanager.User{"admin", initPassword, 0xff}, resp}
+
+		log.Printf("Waiting for admin user to be added.")
+		r := <-resp
+		if !r {
+			log.Fatal("Failed to add admin user.")
+		} else {
+			log.Printf("Admin user added")
+		}
+	} else if initPassword != "" {
+		//XXX: TODO handle this.
+		log.Fatal("User DB was not blank, are you sure you want to add a new user")
+	}
+
+	// Set up http
+	http.HandleFunc("/login", mklogin(um.Login))
+	http.HandleFunc("/playlist", mkplaylist(playlistReq))
+	http.HandleFunc("/submit", mksubmit(playlistAdd, um.KeyCheck))
+	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintf(w, "HGD server, %q", html.EscapeString(r.URL.Path))
+	})
+
+	// Launch services.
 	go playlist.PlaylistManager(db, playlistReq, playlistAdd, dir)
-	go usermanager.UserManger(loginReq, keyCheck)
 	go log.Fatal(http.ListenAndServe(":"+port, nil))
 
 	time.Sleep(time.Second)
 	log.Println("All done setting up.")
+}
+
+func initDB() (*levigo.DB, error) {
+	opts := levigo.NewOptions()
+	opts.SetCache(levigo.NewLRUCache(3 << 30))
+	opts.SetCreateIfMissing(true)
+	return levigo.Open(dir+"/db", opts)
+
 }
 
 func mksubmit(out chan types.Submit, keyCheck chan usermanager.KeyCheckMsg) func(http.ResponseWriter, *http.Request) {
