@@ -25,38 +25,59 @@ type PlaylistAdd struct {
 	TrackFile string
 }
 
-func PlaylistManager(db *levigo.DB, in chan PlaylistReq, playlistAdd chan types.Submit, dir string) {
+type PlaylistManager struct {
+	RequestPlaylist chan PlaylistReq
+	AddTrack        chan types.Submit
+	nextSong        chan NextSong
+	database        *levigo.DB
+	dir             string
+	playlist        []types.PlayListItem
+}
+
+func NewPlaylistManager(db *levigo.DB, filestoreDir string) PlaylistManager {
+	plm := PlaylistManager{
+		RequestPlaylist: make(chan PlaylistReq),
+		AddTrack:        make(chan types.Submit),
+		nextSong:        make(chan NextSong),
+		database:        db,
+		dir:             filestoreDir,
+		playlist:        []types.PlayListItem{},
+	}
+
+	return plm
+}
+
+func (plm PlaylistManager) Run() {
 	log.Println("Started playlist manger")
 
-	ns := make(chan NextSong)
-	go play(ns)
+	go play(plm.nextSong)
 
-	playlist := getPlaylistFromDB(db)
+	plm.playlist = getPlaylistFromDB(plm.database)
 	running := true
 	for running {
 		select {
-		case req := <-in:
+		case req := <-plm.RequestPlaylist:
 			log.Println("hadeling request for playlist")
 			playlistPublic := []string{}
-			for _, el := range playlist {
+			for _, el := range plm.playlist {
 				playlistPublic = append(playlistPublic, el.TrackName)
 			}
 
 			req.ResultChan <- playlistPublic
 			log.Println("playlist sent")
-		case req := <-playlistAdd:
+		case req := <-plm.AddTrack:
 			log.Println("Adding track: ", req.Name)
-			playlist = playListAdd(db, req, playlist, dir)
-		case eq := <-func() chan NextSong {
-			if len(playlist) > 0 {
-				return ns
+			plm.playlist = playListAdd(plm.database, req, plm.playlist, plm.dir)
+		case req := <-func() chan NextSong {
+			if len(plm.playlist) > 0 {
+				return plm.nextSong
 			}
 			return nil
 		}():
 			log.Println("getting next track's filename")
-			nt := playlist[0]
-			playlist = playlist[1:]
-			eq.ResultChan <- nt.Filename
+			nt := plm.playlist[0]
+			plm.playlist = plm.playlist[1:]
+			req.ResultChan <- nt.Filename
 
 		}
 	}

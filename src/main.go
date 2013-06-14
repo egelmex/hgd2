@@ -65,9 +65,6 @@ func main() {
 		log.Fatal(err)
 	}
 
-	playlistReq := make(chan playlist.PlaylistReq)
-	playlistAdd := make(chan types.Submit)
-
 	// Set up user manager
 	um := usermanager.NewUserManager(db)
 	err = um.Initialise()
@@ -92,17 +89,18 @@ func main() {
 		log.Fatal("User DB was not blank, are you sure you want to add a new user")
 	}
 
+	// setup playlist manager.
+	plm := playlist.NewPlaylistManager(db, dir)
+	go plm.Run()
+
 	// Set up http
 	http.HandleFunc("/login", mklogin(um.Login))
-	http.HandleFunc("/playlist", mkplaylist(playlistReq))
-	http.HandleFunc("/submit", mksubmit(playlistAdd, um.KeyCheck))
+	http.HandleFunc("/playlist", mkplaylist(plm.RequestPlaylist))
+	http.HandleFunc("/submit", mksubmit(plm.AddTrack, um.KeyCheck))
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, "HGD server, %q", html.EscapeString(r.URL.Path))
 	})
-
-	// Launch services.
-	go playlist.PlaylistManager(db, playlistReq, playlistAdd, dir)
-	go log.Fatal(http.ListenAndServe(":"+port, nil))
+	go http.ListenAndServe(":"+port, nil)
 
 	time.Sleep(time.Second)
 	log.Println("All done setting up.")
