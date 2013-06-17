@@ -1,7 +1,10 @@
 package main
 
 import (
+	"bufio"
+	"code.google.com/p/gopass"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io/ioutil"
@@ -12,6 +15,8 @@ import (
 	"os"
 	"path"
 	"strings"
+
+//	"github.com/GeertJohan/go.linenoise"
 )
 
 var server string
@@ -55,8 +60,12 @@ func main() {
 	connectionString = "http://" + server + ":" + port + "/"
 
 	key := ""
+	var err error
 	if username != "" {
-		key = login(username, password)
+		key, err = login(username, password)
+	}
+	if err != nil {
+		println("Failed to log in, some services may fail.")
 	}
 
 	if len(args) == 0 {
@@ -72,7 +81,12 @@ func main() {
 				fmt.Println("Submit <Filename>\n")
 
 			}
-
+		case "adduser":
+			if len(args) == 2 {
+				addUser(args[1:], key)
+			} else {
+				fmt.Println("adduser <username>")
+			}
 		default:
 			fmt.Println("Unknown command: ", args[0])
 		}
@@ -80,13 +94,14 @@ func main() {
 
 }
 
-func login(username, password string) string {
+func login(username, password string) (string, error) {
 
 	login := types.Login{username, password}
 	res, err := json.Marshal(login)
 	if err != nil {
 		log.Fatal(err)
 	}
+	println(string(res))
 	resp, err := http.PostForm(connectionString+"login", url.Values{"data": {string(res)}})
 	if err != nil {
 		log.Fatal(err)
@@ -100,8 +115,79 @@ func login(username, password string) string {
 		log.Fatal(e)
 	}
 
-	return r.Key
+	if r.Err != "" {
+		return "", errors.New(r.Err)
+	}
 
+	return r.Key, nil
+
+}
+
+func addUser(parms []string, key string) {
+	if strings.TrimSpace(key) == "" {
+		log.Fatal("Not logged in, must be authenticated to add user.")
+	}
+
+	log.Println("Adding User ", parms[0])
+	username := parms[0]
+	password, e := gopass.GetPass("password: ")
+	if e != nil {
+		log.Fatal(e)
+	}
+
+	reader := bufio.NewReader(os.Stdin)
+	print("Can user submit tracks [Y/n] ")
+	var canSubmit bool = true
+	{
+		var tmpYN string
+		tmpYN, err := reader.ReadString('\n')
+		if err != nil {
+			log.Fatal(err)
+		} else {
+			tmpYN = strings.TrimSpace(strings.ToLower(tmpYN))
+			if tmpYN == "n" || tmpYN == "no" {
+				canSubmit = false
+			}
+		}
+	}
+
+	print("Can user Addnew Users [y/N] ")
+	var canAddUsers bool = false
+	{
+		var tmpYN string
+		tmpYN, err := reader.ReadString('\n')
+		if err != nil {
+			log.Fatal(err)
+		} else {
+			tmpYN = strings.TrimSpace(strings.ToLower(tmpYN))
+			if tmpYN == "y" || tmpYN == "yes" {
+				canSubmit = true
+			}
+		}
+	}
+
+	user := types.AddUser{
+		Password:    password,
+		Key:         key,
+		CanSubmit:   canSubmit,
+		CanAddUsers: canAddUsers,
+	}
+
+	res, err := json.Marshal(user)
+	if err != nil {
+		log.Fatal(err)
+	}
+	resp, err := http.PostForm(connectionString+"user/"+username, url.Values{"data": {string(res)}})
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	body, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	fmt.Printf(string(body))
 }
 
 func submit(parms []string, key string) {

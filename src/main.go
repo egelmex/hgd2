@@ -12,40 +12,56 @@ import (
 	"log"
 	"net/http"
 	"strings"
-	"time"
-
-//	"os"
+	//	"time"
+	"strconv"
+	//	"os"
+	"path"
 )
 import "github.com/jmhodges/levigo"
 
 var db *levigo.DB
-var port string
-var dir string
+
 var initPassword string
+
+var settings settings_t
+
+type settings_t struct {
+	port          uint
+	dir           string
+	maxUploadSize uint
+}
 
 func init() {
 	const (
-		defaultPort = "8080"
+		defaultPort = 8080
 		usagePort   = "port to connect to"
 
 		usageDIR = "dir for HDG configuration files"
 
 		usageInit       = "First time initialisation"
 		defaultPassword = ""
+
+		defaultMaxUploadSize = 100
+		usageMaxUploadSize   = "Maximum upload size in MB."
 	)
 
 	defaultDIR := xdgbase.GetConfigHome() + "/hgd"
 
-	flag.StringVar(&port, "port", defaultPort, usagePort)
-	flag.StringVar(&port, "p", defaultPort, usagePort+" (shorthand)")
+	flag.UintVar(&settings.port, "port", defaultPort, usagePort)
+	flag.UintVar(&settings.port, "p", defaultPort, usagePort+" (shorthand)")
 
-	flag.StringVar(&dir, "dir", defaultDIR, usageDIR)
-	flag.StringVar(&dir, "d", defaultDIR, usageDIR+" (shorthand)")
+	flag.StringVar(&settings.dir, "dir", defaultDIR, usageDIR)
+	flag.StringVar(&settings.dir, "d", defaultDIR, usageDIR+" (shorthand)")
 
 	flag.StringVar(&initPassword, "init", defaultPassword, usageInit)
+
+	flag.UintVar(&settings.maxUploadSize, "s", defaultMaxUploadSize, usageMaxUploadSize)
+
+	log.SetFlags(log.Lshortfile | log.Ldate | log.Ltime)
 }
 
 func main() {
+	done := make(chan int)
 	flag.Parse()
 	args := flag.Args()
 	if len(args) > 0 {
@@ -90,7 +106,7 @@ func main() {
 	}
 
 	// setup playlist manager.
-	plm := playlist.NewPlaylistManager(db, dir)
+	plm := playlist.NewPlaylistManager(db, settings.dir)
 	go plm.Run()
 
 	// Set up http
@@ -100,18 +116,85 @@ func main() {
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, "HGD server, %q", html.EscapeString(r.URL.Path))
 	})
-	go http.ListenAndServe(":"+port, nil)
+	http.HandleFunc("/user/", mkuser(um))
 
-	time.Sleep(time.Second)
+	go func() {
+		log.Println("Starting http server")
+		err := http.ListenAndServe(":"+strconv.Itoa(int(settings.port)), nil)
+		if err != nil {
+			log.Println(err)
+		}
+		log.Println("listen and serve is done..")
+		done <- 1
+	}()
+
 	log.Println("All done setting up.")
+	<-done
 }
 
 func initDB() (*levigo.DB, error) {
 	opts := levigo.NewOptions()
 	opts.SetCache(levigo.NewLRUCache(3 << 30))
 	opts.SetCreateIfMissing(true)
-	return levigo.Open(dir+"/db", opts)
+	return levigo.Open(settings.dir+"/db", opts)
 
+}
+
+func mkuser(um usermanager.UserManager) func(http.ResponseWriter, *http.Request) {
+	return func(w http.ResponseWriter, r *http.Request) {
+		p := r.URL.Path
+		userPart := path.Base(p)
+		dirPart := path.Dir(p)
+		log.Println(userPart)
+		log.Println(dirPart)
+		if r.Method == "POST" {
+			if dirPart != "/user" {
+				log.Println("unknown uri")
+			}
+			log.Printf("New addUser attempt")
+			r.ParseForm()
+			var jsonAddUser = r.FormValue("data")
+
+			addUser := new(types.AddUser)
+
+			var e = json.Unmarshal([]byte(jsonAddUser), addUser)
+			if e != nil {
+
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			permok, userok := checkPerms(um.KeyCheck, addUser.Key, usermanager.PermAddUser)
+			if !userok {
+				log.Println("Submit failed from unkown user key: \"", addUser.Key, "\"")
+				w.WriteHeader(http.StatusForbidden)
+				return
+			}
+			if !permok {
+				log.Println("Submit failed userkey \"", addUser.Key, "\" has invalide perms")
+				fmt.Fprintf(w, "{\"error\":\"Unknown User\"}")
+				return
+			}
+
+			resp := make(chan bool)
+			user := usermanager.User{
+				Name:        userPart,
+				Password:    addUser.Password,
+				Permissions: 0,
+			}
+
+			if addUser.CanSubmit {
+				user.Permissions |= usermanager.PermSubmit
+			}
+
+			if addUser.CanAddUsers {
+				user.Permissions |= usermanager.PermAddUser
+			}
+
+			um.AddUser <- usermanager.AddUserMsg{user, resp}
+			<-resp
+
+		}
+	}
 }
 
 func mksubmit(out chan types.Submit, keyCheck chan usermanager.KeyCheckMsg) func(http.ResponseWriter, *http.Request) {
@@ -189,16 +272,22 @@ func mklogin(out chan usermanager.LoginMsg) func(http.ResponseWriter, *http.Requ
 			var jsonLogin = r.FormValue("data")
 			login := new(types.Login)
 			var e = json.Unmarshal([]byte(jsonLogin), login)
-			if e == nil {
-				resp := make(chan usermanager.LoginResp)
-				out <- usermanager.LoginMsg{*login, resp}
-				r := <-resp
-
-				log.Printf("Login Request from: %v", login.Name)
-				fmt.Fprintf(w, "{\"Key\":\"%s\"}", r.Key)
-			} else {
+			if e != nil {
 				log.Printf("LoginFailed %v \"%v\"\n", e, r.FormValue("data"))
+				return
+
 			}
+			log.Printf("Login Request from: '%v'", login.Name)
+			resp := make(chan usermanager.LoginResp)
+			out <- usermanager.LoginMsg{*login, resp}
+			r := <-resp
+
+			if r.Err != nil {
+				fmt.Fprintf(w, "{\"Error\":\"%s\"}", r.Err)
+				return
+			}
+
+			fmt.Fprintf(w, "{\"Key\":\"%s\"}", r.Key)
 		} else {
 			http.NotFound(w, r)
 		}

@@ -20,7 +20,18 @@ type Submit struct {
 	Key  string
 }
 
-type PlayListItem struct {
-	TrackName string
-	Filename  string
+type SubmitResp struct {
+	err string
+	id  string
+}
+
+type AddUser struct {
+	Password    string
+	Key         string
+	CanSubmit   bool
+	CanAddUsers bool
+}
+
+type AddUserResp struct {
+	Err string
 }

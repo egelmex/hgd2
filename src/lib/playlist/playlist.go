@@ -3,7 +3,9 @@ package playlist
 import (
 	"bufio"
 	"bytes"
+	"crypto/rand"
 	"encoding/gob"
+	"encoding/hex"
 	"github.com/jmhodges/levigo"
 	"io/ioutil"
 	"lib/types"
@@ -25,13 +27,20 @@ type PlaylistAdd struct {
 	TrackFile string
 }
 
+type playListItem struct {
+	id        string
+	trackName string
+	filename  string
+	owner     string
+}
+
 type PlaylistManager struct {
 	RequestPlaylist chan PlaylistReq
 	AddTrack        chan types.Submit
 	nextSong        chan NextSong
 	database        *levigo.DB
 	dir             string
-	playlist        []types.PlayListItem
+	playlist        []playListItem
 }
 
 func NewPlaylistManager(db *levigo.DB, filestoreDir string) PlaylistManager {
@@ -41,7 +50,7 @@ func NewPlaylistManager(db *levigo.DB, filestoreDir string) PlaylistManager {
 		nextSong:        make(chan NextSong),
 		database:        db,
 		dir:             filestoreDir,
-		playlist:        []types.PlayListItem{},
+		playlist:        []playListItem{},
 	}
 
 	return plm
@@ -60,7 +69,7 @@ func (plm PlaylistManager) Run() {
 			log.Println("hadeling request for playlist")
 			playlistPublic := []string{}
 			for _, el := range plm.playlist {
-				playlistPublic = append(playlistPublic, el.TrackName)
+				playlistPublic = append(playlistPublic, el.trackName)
 			}
 
 			req.ResultChan <- playlistPublic
@@ -77,14 +86,14 @@ func (plm PlaylistManager) Run() {
 			log.Println("getting next track's filename")
 			nt := plm.playlist[0]
 			plm.playlist = plm.playlist[1:]
-			req.ResultChan <- nt.Filename
+			req.ResultChan <- nt.filename
 
 		}
 	}
 	log.Println("playlistManager exited.")
 }
 
-func getPlaylistFromDB(db *levigo.DB) []types.PlayListItem {
+func getPlaylistFromDB(db *levigo.DB) []playListItem {
 	log.Println("Loading Playlist from file...")
 
 	ro := levigo.NewReadOptions()
@@ -98,12 +107,12 @@ func getPlaylistFromDB(db *levigo.DB) []types.PlayListItem {
 
 	dec := gob.NewDecoder(p)
 
-	var playlist []types.PlayListItem
+	var playlist []playListItem
 	//we must decode into a pointer, so we'll take the address of e
 	err = dec.Decode(&playlist)
 	if err != nil {
 		log.Print(err)
-		playlist = []types.PlayListItem{}
+		playlist = []playListItem{}
 	}
 
 	log.Println("Loaded ", len(playlist), " items into playlist")
@@ -112,7 +121,7 @@ func getPlaylistFromDB(db *levigo.DB) []types.PlayListItem {
 
 }
 
-func playListAdd(db *levigo.DB, req types.Submit, playlist []types.PlayListItem, dir string) []types.PlayListItem {
+func playListAdd(db *levigo.DB, req types.Submit, playlist []playListItem, dir string) []playListItem {
 
 	fo, err := ioutil.TempFile(dir+"/files", req.Name)
 	if err != nil {
@@ -132,12 +141,14 @@ func playListAdd(db *levigo.DB, req types.Submit, playlist []types.PlayListItem,
 		panic(err)
 	}
 
-	playlist = append(playlist, types.PlayListItem{req.Name, fo.Name()})
+	//XXX: set owner.
+	uuid, _ := generateUUID()
+	playlist = append(playlist, playListItem{uuid, req.Name, fo.Name(), ""})
 	writePlaylistToDB(db, playlist)
 	return playlist
 }
 
-func writePlaylistToDB(db *levigo.DB, playlist []types.PlayListItem) {
+func writePlaylistToDB(db *levigo.DB, playlist []playListItem) {
 	wo := levigo.NewWriteOptions()
 	m := new(bytes.Buffer)
 	enc := gob.NewEncoder(m)
@@ -172,4 +183,16 @@ func play(requestSong chan NextSong) {
 			/// XXX
 		}
 	}
+}
+
+func generateUUID() (string, bool) {
+	u := make([]byte, 16)
+	_, err := rand.Read(u)
+	if err != nil {
+		return "", false
+	}
+
+	u[8] = (u[8] | 0x80) & 0xBF
+	u[6] = (u[6] | 0x40) & 0x4F
+	return hex.EncodeToString(u), true
 }

@@ -12,7 +12,8 @@ import (
 )
 
 const (
-	PermSubmit = 1 << iota
+	PermSubmit  = 1 << iota
+	PermAddUser = 1 << iota
 )
 
 type AddUserMsg struct {
@@ -23,6 +24,11 @@ type AddUserMsg struct {
 type LoginMsg struct {
 	Login types.Login
 	Resp  chan LoginResp
+}
+
+type LoginResp struct {
+	Err error
+	Key string
 }
 
 type User struct {
@@ -39,11 +45,6 @@ type KeyCheckMsg struct {
 type KeyCheckResp struct {
 	Permissions int
 	OK          bool
-}
-
-type LoginResp struct {
-	Err string
-	Key string
 }
 
 type UserManager struct {
@@ -74,47 +75,65 @@ func NewUserManager(db *levigo.DB) UserManager {
 	return m
 }
 
-func (um UserManager) Initialise() error {
+func (um *UserManager) Initialise() error {
+	log.Println("Initialising UserManager.")
 	um.users = loadUsers(um.database)
 	if len(um.users) == 0 {
 		log.Printf("No user loaded")
 		return errors.New("No users loaded")
 	}
 	um.initialised = true
+	log.Printf("%+v", um.users)
 	return nil
 }
 
-func (um UserManager) Run() error {
+func (um *UserManager) Run() error {
 	log.Printf("Starting user manager")
+	log.Printf("%+v", um.users)
 
 	for {
 		select {
 		case req := <-um.Login:
-			log.Println("Checking login of: ", req.Login.Name)
-
-			user, ok := um.users[req.Login.Name]
-			if !ok {
-				req.Resp <- LoginResp{"Unknown username or password.", ""}
-			} else {
-				if user.Password == req.Login.Password {
-					key, _ := generateUUID()
-					um.keys[key] = user
-					req.Resp <- LoginResp{"", key}
-				} else {
-					req.Resp <- LoginResp{"Unknown username or password.", ""}
-				}
-			}
+			handleLogin(req, um)
 		case req := <-um.KeyCheck:
 			key, ok := um.keys[req.Key]
 			req.Resp <- KeyCheckResp{key.Permissions, ok}
 		case req := <-um.AddUser:
 			log.Println("Adding User.")
+			/// XXX: Handel if user already exsists.
+			log.Printf("%+v", req.User)
 			um.users[req.User.Name] = req.User
 			req.Resp <- true
 			writeUsersToDB(um.database, um.users)
 			log.Println("User added..")
 		}
 	}
+}
+
+func handleLogin(req LoginMsg, um *UserManager) {
+
+	var (
+		key string = ""
+		err error  = nil
+	)
+
+	log.Printf("Checking login of: '%v' password: '%v'\n", req.Login.Name, req.Login.Password)
+
+	user, ok := um.users[req.Login.Name]
+	if !ok {
+		log.Printf("Login failed, unknown username %v", req.Login.Name)
+		err = errors.New("Unknown username or password.")
+	} else {
+		if user.Password == req.Login.Password {
+			key, _ = generateUUID()
+			um.keys[key] = user
+		} else {
+			log.Println("Login failed, wrong passoword for", req.Login.Name)
+			err = errors.New("Unknown username or password.")
+		}
+	}
+	req.Resp <- LoginResp{err, key}
+	log.Println("Done checking login.")
 }
 
 func generateUUID() (string, bool) {
@@ -152,7 +171,7 @@ func loadUsers(db *levigo.DB) map[string]User {
 	}
 
 	log.Println("Loaded ", len(users), " users")
-	log.Println(users)
+	log.Printf("%+v", users)
 	return users
 
 }
